@@ -31,6 +31,36 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "💱 ارزهای جهان":
         await update.message.reply_text("در حال دریافت قیمت ارزها...")
+        async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if text == "💱 ارزهای جهان":
+
+        rates = get_rates()
+
+        if not rates:
+            await update.message.reply_text("❌ خطا در دریافت قیمت")
+            return
+
+        msg = f"""
+💱 قیمت لحظه‌ای ارزها
+
+🇺🇸 USD : {rates['USD']}
+🇪🇺 EUR : {rates['EUR']}
+🇬🇧 GBP : {rates['GBP']}
+🇯🇵 JPY : {rates['JPY']}
+🇨🇳 CNY : {rates['CNY']}
+🇹🇷 TRY : {rates['TRY']}
+🇷🇺 RUB : {rates['RUB']}
+🇦🇪 AED : {rates['AED']}
+🇸🇦 SAR : {rates['SAR']}
+🇮🇷 IRR : {rates['IRR']}
+"""
+
+        await update.message.reply_text(msg)
+
+    elif text == "🪙 ارزهای دیجیتال":
+        await update.message.reply_text("در حال دریافت قیمت ارزهای دیجیتال...")
 
     elif text == "🪙 ارزهای دیجیتال":
         await update.message.reply_text("در حال دریافت قیمت ارزهای دیجیتال...")
