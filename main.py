@@ -1,134 +1,126 @@
-import os
-import json
-import aiohttp
-import asyncio
+import random
 import aiosqlite
-from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
-load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "YOUR_BOT_TOKEN"
+DB = "love.db"
 
-DB = "bot.db"
+user_data = {}
 
-# ---------------- DATABASE ----------------
+# ---------------- DB ----------------
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("""
-        CREATE TABLE IF NOT EXISTS favorites (
-            user_id INTEGER,
-            symbol TEXT
-        )
-        """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS alerts (
-            user_id INTEGER,
-            symbol TEXT,
-            price REAL
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            name TEXT
         )
         """)
         await db.commit()
 
 
-# ---------------- PRICE API (BINANCE REAL) ----------------
-async def get_price(symbol="bitcoin"):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as r:
-            data = await r.json()
-            return data[symbol]["usd"]
-
-
-# ---------------- FIAT ----------------
-async def fiat_convert(amount, from_cur, to_cur):
-    url = f"https://api.exchangerate.host/convert?from={from_cur}&to={to_cur}&amount={amount}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as r:
-            data = await r.json()
-            return data["result"]
-
-
-# ---------------- CHART (NO matplotlib) ----------------
-def chart_url(prices):
-    base = "https://quickchart.io/chart"
-    config = {
-        "type": "line",
-        "data": {
-            "labels": list(range(len(prices))),
-            "datasets": [{
-                "label": "Price",
-                "data": prices
-            }]
-        }
-    }
-    return f"{base}?c={json.dumps(config)}"
-
-
-# ---------------- COMMANDS ----------------
+# ---------------- START ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💎 ربات کریپتو فعال شد\n"
-        "دستورها:\n"
-        "/price bitcoin\n"
-        "/convert 10 usd eur"
+        "💖 ربات عشق فعال شد!\n\n"
+        "برای شروع بنویس:\n"
+        "/love"
     )
 
 
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    coin = context.args[0] if context.args else "bitcoin"
-    p = await get_price(coin)
-    await update.message.reply_text(f"💰 {coin.upper()} = ${p}")
+# ---------------- LOVE START ----------------
+async def love(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data[user_id] = {}
+
+    await update.message.reply_text("💘 اسم خودت را وارد کن:")
 
 
-async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    amount = float(context.args[0])
-    f = context.args[1]
-    t = context.args[2]
-    result = await fiat_convert(amount, f, t)
-    await update.message.reply_text(f"💱 {result} {t}")
+# ---------------- MESSAGE FLOW ----------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text
 
+    if user_id not in user_data:
+        return
 
-# ---------------- ALERT CHECK LOOP ----------------
-async def alert_loop(app):
-    while True:
-        async with aiosqlite.connect(DB) as db:
-            async with db.execute("SELECT * FROM alerts") as cur:
-                rows = await cur.fetchall()
+    data = user_data[user_id]
 
-        for user_id, symbol, target in rows:
-            try:
-                price = await get_price(symbol)
-                if price >= target:
-                    await app.bot.send_message(
-                        user_id,
-                        f"🔔 ALERT!\n{symbol} رسید به {price}$"
-                    )
-            except:
-                pass
+    # step 1
+    if "me" not in data:
+        data["me"] = text
+        await update.message.reply_text("💌 اسم طرف مقابل؟")
+        return
 
-        await asyncio.sleep(30)
+    # step 2
+    if "you" not in data:
+        data["you"] = text
+        await update.message.reply_text("🎂 سن خودت؟")
+        return
+
+    # step 3
+    if "age1" not in data:
+        data["age1"] = text
+        await update.message.reply_text("🎂 سن طرف مقابل؟")
+        return
+
+    # step 4
+    if "age2" not in data:
+        data["age2"] = text
+
+        # 💘 CALCULATION
+        base = random.randint(40, 95)
+
+        # سن تاثیر
+        try:
+            a1 = int(data["age1"])
+            a2 = int(data["age2"])
+            diff = abs(a1 - a2)
+
+            if diff < 3:
+                base += 5
+            elif diff > 10:
+                base -= 10
+        except:
+            pass
+
+        percent = min(max(base, 0), 100)
+
+        # تحلیل
+        if percent > 80:
+            status = "💖 عشق واقعی و قوی!"
+        elif percent > 50:
+            status = "💛 رابطه متوسط ولی قابل رشد"
+        else:
+            status = "💔 بیشتر احساسی لحظه‌ایه"
+
+        await update.message.reply_text(
+            f"💘 نتیجه عشق‌سنج\n\n"
+            f"👤 {data['me']} ❤️ {data['you']}\n\n"
+            f"📊 درصد عشق: {percent}%\n"
+            f"🔮 تحلیل: {status}\n\n"
+            f"👑 ساخته شده توسط: امیر علی فروزان اصل"
+        )
+
+        user_data.pop(user_id)
+        return
 
 
 # ---------------- MAIN ----------------
 async def main():
-    if not TOKEN:
-        print("❌ BOT_TOKEN تنظیم نشده!")
-        return
-
     await init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("price", price))
-    app.add_handler(CommandHandler("convert", convert))
+    app.add_handler(CommandHandler("love", love))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    asyncio.create_task(alert_loop(app))
-
-    print("🚀 Bot Running...")
+    print("💖 Bot Running...")
     await app.run_polling()
 
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
