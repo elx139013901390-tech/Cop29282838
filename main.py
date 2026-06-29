@@ -1,3 +1,4 @@
+from modules.currency import get_rates
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import (
     Application,
