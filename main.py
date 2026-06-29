@@ -1,135 +1,150 @@
-import logging
-import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from apscheduler.schedulers.background import BackgroundScheduler
-
-# --- تنظیمات اصلی ---
 import os
+import aiohttp
+import aiosqlite
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler,
+    MessageHandler, ContextTypes, filters
+)
 
-TOKEN = os.getenv("TOKEN")
-# در Railway، این لینک را از بخش Database دریافت و اینجا قرار دهید
-try:
-    DATABASE_URL = os.getenv("DATABASE_URL")
-except:
-    DATABASE_URL = "sqlite:///bot.db"
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# --- تنظیمات دیتابیس (SQLAlchemy) ---
-Base = declarative_base()
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
+DB = "bot.db"
 
-class User(Base):
-    __tablename__ = 'users'
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True)
-    name = Column(String)
-    favorites = Column(String, default="") # ذخیره آیدی ارزها به صورت رشته
+# ---------------- DATABASE ----------------
+async def init_db():
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            balance REAL DEFAULT 0
+        )""")
 
-class PriceAlert(Base):
-    __tablename__ = 'alerts'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer)
-    symbol = Column(String)
-    target_price = Column(Float)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS favorites (
+            user_id INTEGER,
+            symbol TEXT
+        )""")
 
-Base.metadata.create_all(engine)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            user_id INTEGER,
+            symbol TEXT,
+            target REAL
+        )""")
 
-# --- دریافت داده‌ها از API (بدون نیاز به کتابخانه اضافی) ---
-class FinancialAPI:
-    @staticmethod
-    def get_crypto_price(symbol):
-        """دریافت قیمت از CoinGecko"""
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
-        try:
-            response = requests.get(url).json()
-            return response[symbol]['usd']
-        except:
-            return None
+        await db.commit()
 
-    @staticmethod
-    def get_fiat_rate(base, target):
-        """دریافت نرخ ارزهای جهانی"""
-        url = f"https://api.exchangerate-api.com/v4/latest/{base}"
-        try:
-            data = requests.get(url).json()
-            return data['rates'][target]
-        except:
-            return None
+async def add_user(user):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users(user_id, username) VALUES (?,?)",
+            (user.id, user.username)
+        )
+        await db.commit()
 
-# --- بخش ربات تلگرام ---
-logging.basicConfig(level=logging.INFO)
+# ---------------- API ----------------
+async def get_fiat_rate(from_cur, to_cur):
+    url = f"https://api.exchangerate.host/convert?from={from_cur}&to={to_cur}"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            data = await r.json()
+            return data["result"]
 
+async def get_crypto_price(symbol):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            data = await r.json()
+            return data.get(symbol, {}).get("usd", None)
+
+async def get_country(name):
+    url = f"https://restcountries.com/v3.1/name/{name}"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            data = await r.json()
+            if isinstance(data, list):
+                c = data[0]
+                return f"""
+🌍 کشور: {c['name']['common']}
+💰 واحد پول: {list(c['currencies'].keys())[0]}
+👥 جمعیت: {c['population']}
+🌐 قاره: {c['region']}
+"""
+            return "یافت نشد"
+
+# ---------------- UI ----------------
+menu = ReplyKeyboardMarkup([
+    ["💱 تبدیل ارز", "🪙 قیمت کریپتو"],
+    ["🌍 کشور", "⭐ علاقه‌مندی"],
+    ["👤 پروفایل", "👑 پنل ادمین"]
+], resize_keyboard=True)
+
+# ---------------- HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = Session()
-    
-    # ثبت کاربر در دیتابیس اگر نبود
-    user = session.query(User).filter_by(telegram_id=user_id).first()
-    if not user:
-        new_user = User(telegram_id=user_id, name=update.effective_user.first_name)
-        session.add(new_user)
-        session.commit()
-    session.close()
+    await add_user(update.effective_user)
+    await update.message.reply_text("👋 خوش آمدی!", reply_markup=menu)
 
-    keyboard = [
-        [InlineKeyboardButton("🪙 ارزهای دیجیتال", callback_data='menu_crypto')],
-        [InlineKeyboardButton("💱 تبدیل ارز جهانی", callback_data='menu_fiat')],
-        [InlineKeyboardButton("📈 طلا و نفت", callback_data='menu_gold')],
-        [InlineKeyboardButton("⭐ ارزهای محبوب", callback_data='menu_fav')],
-        [InlineKeyboardButton("🔔 هشدار قیمت", callback_data='menu_alert')],
-        [InlineKeyboardButton("👤 پروفایل", callback_data='menu_profile')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("💎 **به ربات مالی امیرعلی فروزا خوش آمدید**\nلطفاً انتخاب کنید:", reply_markup=reply_markup, parse_mode='Markdown')
+# ---- CONVERT ----
+async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        _, amount, f, t = update.message.text.split()
+        result = await get_fiat_rate(f.upper(), t.upper())
+        await update.message.reply_text(f"💱 نتیجه: {result * float(amount)} {t}")
+    except:
+        await update.message.reply_text("فرمت: convert 10 USD EUR")
 
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == 'menu_crypto':
-        # در اینجا می‌توانید لیست ارزها را از دیتابیس یا API بگیرید
-        await query.edit_message_text("🔍 در حال جستجو در لیست ۱۰,۰۰۰ ارز...")
-        # نمونه نمایش قیمت
-        price = FinancialAPI.get_crypto_price("bitcoin")
-        await query.message.reply_text(f"💰 قیمت بیت‌کوین: ${price}")
+# ---- CRYPTO ----
+async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        _, symbol = update.message.text.split()
+        price = await get_crypto_price(symbol.lower())
+        await update.message.reply_text(f"🪙 {symbol}: ${price}")
+    except:
+        await update.message.reply_text("مثال: crypto bitcoin")
 
-    elif query.data == 'menu_profile':
-        session = Session()
-        user = session.query(User).filter_by(telegram_id=query.from_user.id).first()
-        await query.edit_message_text(f"👤 پروفایل شما:\n🆔 {user.telegram_id}\n⭐ محبوب‌ها: {user.favorites}")
-        session.close()
+# ---- COUNTRY ----
+async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        _, name = update.message.text.split(maxsplit=1)
+        data = await get_country(name)
+        await update.message.reply_text(data)
+    except:
+        await update.message.reply_text("مثال: country germany")
 
-# --- سیستم هشدار (Background Task) ---
-def check_price_alerts():
-    """این تابع هر دقیقه چک می‌کند آیا قیمتی به حد نصاب رسیده یا خیر"""
-    session = Session()
-    alerts = session.query(PriceAlert).all()
-    for alert in alerts:
-        current_price = FinancialAPI.get_crypto_price(alert.symbol)
-        if current_price and current_price >= alert.target_price:
-            # در اینجا کد ارسال پیام به کاربر قرار می‌گیرد
-            print(f"ALERT! {alert.symbol} reached {current_price}")
-    session.close()
+# ---- PROFILE ----
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    await update.message.reply_text(
+        f"👤 آیدی: {user.id}\n"
+        f"👤 یوزرنیم: @{user.username}"
+    )
 
-# --- اجرای اصلی ---
-def main():
-    application = Application.builder().token(TOKEN).build()
+# ---- ADMIN ----
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("⛔ دسترسی نداری")
 
-    # افزودن دستورات
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(handle_buttons))
+    await update.message.reply_text("👑 پنل ادمین فعال است")
 
-    # تنظیم زمان‌بندی برای چک کردن قیمت‌ها (هر ۶۰ ثانیه)
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(check_price_alerts, 'interval', seconds=60)
-    scheduler.start()
+# ---------------- MAIN ----------------
+async def main():
+    await init_db()
 
-    print("🚀 Bot is running on Railway...")
-    application.run_polling()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-if __name__ == '__main__':
-    main()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Regex("^convert"), convert))
+    app.add_handler(MessageHandler(filters.Regex("^crypto"), crypto))
+    app.add_handler(MessageHandler(filters.Regex("^country"), country))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(CommandHandler("profile", profile))
+
+    print("Bot running...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
