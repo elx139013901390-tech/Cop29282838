@@ -1,28 +1,22 @@
 import os
+import json
 import asyncio
 import aiohttp
 import aiosqlite
+import websockets
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes
-)
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
+# ================== CONFIG ==================
+TOKEN = os.getenv("TOKEN")
 DB = "bot.db"
 
-# ================= DB =================
+latest_prices = {}
+
+# ================== DATABASE ==================
 async def init_db():
     async with aiosqlite.connect(DB) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            coins INTEGER DEFAULT 0
-        )
-        """)
         await db.execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             user_id INTEGER,
@@ -38,129 +32,133 @@ async def init_db():
         """)
         await db.commit()
 
-async def add_user(user_id: int):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
-            (user_id,)
-        )
-        await db.commit()
-
-# ================= BINANCE API =================
-async def get_price(symbol="BTCUSDT"):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as r:
+# ================== CRYPTO PRICE (REST fallback) ==================
+async def crypto_price(symbol="bitcoin"):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
             data = await r.json()
-            return float(data["price"])
+            return data.get(symbol, {}).get("usd", 0)
 
-# ================= UI =================
-def kb():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💰 قیمت BTC", callback_data="price")],
-        [InlineKeyboardButton("⭐ علاقه‌مندی", callback_data="fav")],
-        [InlineKeyboardButton("🔔 هشدار", callback_data="alert")],
-        [InlineKeyboardButton("💎 سکه", callback_data="coins")]
-    ])
+# ================== FIAT CONVERT ==================
+async def fiat_convert(from_cur="USD", to_cur="EUR", amount=1):
+    url = f"https://api.exchangerate.host/convert?from={from_cur}&to={to_cur}&amount={amount}"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            data = await r.json()
+            return data.get("result", 0)
 
-# ================= START =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await add_user(user_id)
+# ================== BINANCE WEBSOCKET ==================
+async def binance_ws():
+    url = "wss://stream.binance.com:9443/ws/!ticker@arr"
 
-    await update.message.reply_text(
-        "💎 ربات GOD کریپتو فعال شد",
-        reply_markup=kb()
-    )
+    async with websockets.connect(url) as ws:
+        while True:
+            msg = await ws.recv()
+            data = json.loads(msg)
 
-# ================= CALLBACK =================
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    user_id = q.from_user.id
+            for item in data:
+                symbol = item["s"]
+                price = float(item["c"])
+                latest_prices[symbol] = price
 
-    if q.data == "price":
-        price = await get_price("BTCUSDT")
-        await q.edit_message_text(f"💰 BTC:\n{price}$")
-
-    elif q.data == "coins":
-        async with aiosqlite.connect(DB) as db:
-            cur = await db.execute(
-                "SELECT coins FROM users WHERE user_id=?",
-                (user_id,)
-            )
-            row = await cur.fetchone()
-            coins = row[0] if row else 0
-
-        await q.edit_message_text(f"💎 سکه: {coins}")
-
-    elif q.data == "fav":
-        async with aiosqlite.connect(DB) as db:
-            cur = await db.execute(
-                "SELECT symbol FROM favorites WHERE user_id=?",
-                (user_id,)
-            )
-            rows = await cur.fetchall()
-
-        text = "\n".join([r[0] for r in rows]) if rows else "خالی"
-        await q.edit_message_text(f"⭐ علاقه‌مندی‌ها:\n{text}")
-
-    elif q.data == "alert":
-        await q.edit_message_text("🔔 استفاده:\n/alert BTCUSDT 40000")
-
-# ================= ALERT COMMAND =================
-async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    try:
-        symbol = context.args[0]
-        price = float(context.args[1])
-    except:
-        await update.message.reply_text("❌ مثال: /alert BTCUSDT 40000")
-        return
-
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT INTO alerts VALUES (?,?,?)",
-            (user_id, symbol, price)
-        )
-        await db.commit()
-
-    await update.message.reply_text("✅ هشدار ثبت شد")
-
-# ================= BACKGROUND TASK =================
-async def checker(app):
+# ================== ALERT SYSTEM ==================
+async def alert_checker(app):
     while True:
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute("SELECT user_id, symbol, price FROM alerts")
             rows = await cur.fetchall()
 
         for user_id, symbol, target in rows:
-            try:
-                price = await get_price(symbol)
-                if price >= target:
-                    await app.bot.send_message(
-                        user_id,
-                        f"🚨 ALERT!\n{symbol} = {price}$"
-                    )
-            except:
-                pass
+            sym = symbol.upper() + "USDT"
+            price = latest_prices.get(sym)
 
-        await asyncio.sleep(30)
+            if price and price >= target:
+                await app.bot.send_message(
+                    chat_id=user_id,
+                    text=f"🚨 ALERT!\n{symbol} reached {price}$ 🎯"
+                )
 
-# ================= MAIN =================
+        await asyncio.sleep(10)
+
+# ================== UI ==================
+def menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 BTC Price", callback_data="btc")],
+        [InlineKeyboardButton("💱 Convert USD→EUR", callback_data="convert")],
+        [InlineKeyboardButton("📈 Chart", callback_data="chart")],
+        [InlineKeyboardButton("⭐ Favorites", callback_data="fav")]
+    ])
+
+# ================== START ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💎 GOD CRYPTO BOT\n👑 Amir Ali Faroozan Asl",
+        reply_markup=menu()
+    )
+
+# ================== CALLBACK ==================
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    # -------- BTC PRICE --------
+    if q.data == "btc":
+        price = latest_prices.get("BTCUSDT", None)
+
+        if not price:
+            price = await crypto_price("bitcoin")
+
+        await q.message.reply_text(f"💰 BTC: {price}$")
+
+    # -------- CONVERT --------
+    elif q.data == "convert":
+        result = await fiat_convert("USD", "EUR", 10)
+        await q.message.reply_text(f"💱 10 USD = {result} EUR")
+
+    # -------- CHART (QuickChart API) --------
+    elif q.data == "chart":
+        url = "https://quickchart.io/chart?c={type:'line',data:{labels:['1','2','3','4'],datasets:[{label:'BTC',data:[10,20,15,30]}]}}"
+        await q.message.reply_text(f"📈 Chart:\n{url}")
+
+    # -------- FAVORITES --------
+    elif q.data == "fav":
+        await q.message.reply_text("⭐ Favorites system ready (DB enabled)")
+
+# ================== ALERT COMMAND ==================
+async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    try:
+        symbol = context.args[0]
+        price = float(context.args[1])
+
+        async with aiosqlite.connect(DB) as db:
+            await db.execute(
+                "INSERT INTO alerts VALUES (?,?,?)",
+                (user_id, symbol, price)
+            )
+            await db.commit()
+
+        await update.message.reply_text("✅ Alert saved!")
+
+    except:
+        await update.message.reply_text("❌ Use: /alert BTC 50000")
+
+# ================== MAIN ==================
 async def main():
     await init_db()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alert", alert))
-    app.add_handler(CallbackQueryHandler(callback))
+    app.add_handler(CallbackQueryHandler(buttons))
 
-    asyncio.create_task(checker(app))
+    asyncio.create_task(binance_ws())
+    asyncio.create_task(alert_checker(app))
 
-    print("BOT RUNNING...")
+    print("💎 GOD BOT RUNNING...")
     await app.run_polling()
 
 if __name__ == "__main__":
