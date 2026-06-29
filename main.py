@@ -2,23 +2,14 @@ import os
 import asyncio
 import aiohttp
 import aiosqlite
-import matplotlib.pyplot as plt
 
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 DB = "bot.db"
 
-
-# ---------------- DB ----------------
+# ================= DATABASE =================
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("""
@@ -30,125 +21,138 @@ async def init_db():
         await db.execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             user_id INTEGER,
-            coin TEXT
+            symbol TEXT
+        )
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS alerts (
+            user_id INTEGER,
+            symbol TEXT,
+            price REAL
         )
         """)
         await db.commit()
 
-
 async def add_user(user_id):
     async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT OR IGNORE INTO users(user_id, coins) VALUES (?,0)",
-            (user_id,)
-        )
+        await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
         await db.commit()
 
-
-async def add_coin(user_id, amount=1):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "UPDATE users SET coins = coins + ? WHERE user_id=?",
-            (amount, user_id)
-        )
-        await db.commit()
-
-
-async def get_coin(user_id):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT coins FROM users WHERE user_id=?", (user_id,))
-        row = await cur.fetchone()
-        return row[0] if row else 0
-
-
-async def add_favorite(user_id, coin):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT INTO favorites(user_id, coin) VALUES (?,?)",
-            (user_id, coin.upper())
-        )
-        await db.commit()
-
-
-async def get_favorites(user_id):
-    async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT coin FROM favorites WHERE user_id=?", (user_id,))
-        return [row[0] for row in await cur.fetchall()]
-
-
-# ---------------- API ----------------
-async def get_price(coin="bitcoin"):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin}&vs_currencies=usd"
+# ================= API BINANCE =================
+async def get_price(symbol="BTCUSDT"):
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as r:
-            data = await r.json()
-            return data.get(coin, {}).get("usd", 0)
+        async with session.get(url) as resp:
+            data = await resp.json()
+            return float(data["price"])
 
+# ================= UI =================
+def main_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 قیمت BTC", callback_data="price")],
+        [InlineKeyboardButton("⭐ علاقه‌مندی", callback_data="fav")],
+        [InlineKeyboardButton("🔔 هشدار", callback_data="alert")],
+        [InlineKeyboardButton("💎 سکه", callback_data="coins")]
+    ])
 
-# ---------------- KEYBOARD ----------------
-keyboard = ReplyKeyboardMarkup([
-    ["💰 سکه", "⭐ علاقه‌مندی"],
-    ["📊 قیمت بیتکوین", "🔔 هشدار قیمت"],
-    ["👑 پنل ادمین"]
-], resize_keyboard=True)
-
-
-# ---------------- HANDLERS ----------------
+# ================= HANDLERS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await add_user(user_id)
 
-    await update.message.reply_text("💎 ربات کریپتو فعال شد", reply_markup=keyboard)
+    await update.message.reply_text(
+        "💎 ربات GOD کریپتو فعال شد",
+        reply_markup=main_kb()
+    )
 
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id
 
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # -------- PRICE --------
+    if q.data == "price":
+        price = await get_price("BTCUSDT")
+        await q.edit_message_text(f"💰 BTC Price:\n{price}$")
+
+    # -------- COINS --------
+    elif q.data == "coins":
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT coins FROM users WHERE user_id=?", (user_id,))
+            row = await cur.fetchone()
+            coins = row[0] if row else 0
+
+        await q.edit_message_text(f"💎 سکه شما: {coins}")
+
+    # -------- FAVORITES --------
+    elif q.data == "fav":
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT symbol FROM favorites WHERE user_id=?", (user_id,))
+            rows = await cur.fetchall()
+
+        favs = "\n".join([r[0] for r in rows]) if rows else "خالی"
+        await q.edit_message_text(f"⭐ علاقه‌مندی‌ها:\n{favs}")
+
+    # -------- ALERT INFO --------
+    elif q.data == "alert":
+        await q.edit_message_text(
+            "🔔 برای ساخت هشدار:\n\n/alert BTCUSDT 40000"
+        )
+
+# ================= ALERT SYSTEM =================
+async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text
 
-    await add_user(user_id)
-    await add_coin(user_id, 1)
+    try:
+        symbol = context.args[0]
+        price = float(context.args[1])
+    except:
+        await update.message.reply_text("❌ مثال: /alert BTCUSDT 40000")
+        return
 
-    # 💰 coins
-    if text == "💰 سکه":
-        coins = await get_coin(user_id)
-        await update.message.reply_text(f"💰 سکه: {coins}")
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO alerts VALUES (?,?,?)",
+            (user_id, symbol, price)
+        )
+        await db.commit()
 
-    # ⭐ favorites
-    elif text == "⭐ علاقه‌مندی":
-        fav = await get_favorites(user_id)
-        await update.message.reply_text(f"⭐ ارزهای ذخیره شده: {fav}")
+    await update.message.reply_text("✅ هشدار ثبت شد")
 
-    # 📊 price
-    elif text == "📊 قیمت بیتکوین":
-        price = await get_price("bitcoin")
-        await update.message.reply_text(f"📊 BTC: ${price}")
+# ================= BACKGROUND CHECK =================
+async def check_alerts(app):
+    while True:
+        async with aiosqlite.connect(DB) as db:
+            cur = await db.execute("SELECT user_id, symbol, price FROM alerts")
+            rows = await cur.fetchall()
 
-    # 🔔 alert test
-    elif text == "🔔 هشدار قیمت":
-        price = await get_price("bitcoin")
-        if price > 0:
-            await update.message.reply_text(f"🔔 قیمت فعلی BTC: ${price}")
+        for user_id, symbol, target in rows:
+            try:
+                price = await get_price(symbol)
+                if price >= target:
+                    await app.bot.send_message(
+                        user_id,
+                        f"🚨 هشدار فعال شد!\n{symbol} = {price}$"
+                    )
+            except:
+                pass
 
-    # 👑 admin
-    elif text == "👑 پنل ادمین":
-        if user_id == ADMIN_ID:
-            await update.message.reply_text("👑 پنل ادمین فعال")
-        else:
-            await update.message.reply_text("❌ دسترسی ندارید")
+        await asyncio.sleep(30)
 
-
-# ---------------- MAIN ----------------
+# ================= MAIN =================
 async def main():
     await init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+    app.add_handler(CommandHandler("alert", alert_command))
+    app.add_handler(CallbackQueryHandler(buttons))
 
-    print("BOT RUNNING...")
+    asyncio.create_task(check_alerts(app))
+
+    print("GOD BOT RUNNING...")
     await app.run_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
