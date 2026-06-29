@@ -1,10 +1,14 @@
 import os
 import aiohttp
 import aiosqlite
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -20,22 +24,26 @@ async def init_db():
             user_id INTEGER PRIMARY KEY,
             username TEXT,
             balance REAL DEFAULT 0
-        )""")
+        )
+        """)
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS favorites (
             user_id INTEGER,
             symbol TEXT
-        )""")
+        )
+        """)
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
             user_id INTEGER,
             symbol TEXT,
             target REAL
-        )""")
+        )
+        """)
 
         await db.commit()
+
 
 async def add_user(user):
     async with aiosqlite.connect(DB) as db:
@@ -51,35 +59,41 @@ async def get_fiat_rate(from_cur, to_cur):
     async with aiohttp.ClientSession() as s:
         async with s.get(url) as r:
             data = await r.json()
-            return data["result"]
+            return data.get("result", 0)
+
 
 async def get_crypto_price(symbol):
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
     async with aiohttp.ClientSession() as s:
         async with s.get(url) as r:
             data = await r.json()
-            return data.get(symbol, {}).get("usd", None)
+            return data.get(symbol, {}).get("usd")
+
 
 async def get_country(name):
     url = f"https://restcountries.com/v3.1/name/{name}"
     async with aiohttp.ClientSession() as s:
         async with s.get(url) as r:
             data = await r.json()
+
             if isinstance(data, list):
                 c = data[0]
-                return f"""
-🌍 کشور: {c['name']['common']}
-💰 واحد پول: {list(c['currencies'].keys())[0]}
-👥 جمعیت: {c['population']}
-🌐 قاره: {c['region']}
-"""
+                currency = list(c.get("currencies", {}).keys())[0] if c.get("currencies") else "N/A"
+
+                return (
+                    f"🌍 کشور: {c['name']['common']}\n"
+                    f"💰 واحد پول: {currency}\n"
+                    f"👥 جمعیت: {c['population']}\n"
+                    f"🌐 قاره: {c['region']}"
+                )
+
             return "یافت نشد"
 
 # ---------------- UI ----------------
 menu = ReplyKeyboardMarkup([
-    ["💱 تبدیل ارز", "🪙 قیمت کریپتو"],
-    ["🌍 کشور", "⭐ علاقه‌مندی"],
-    ["👤 پروفایل", "👑 پنل ادمین"]
+    ["💱 تبدیل ارز", "🪙 کریپتو"],
+    ["🌍 کشور", "👤 پروفایل"],
+    ["👑 پنل ادمین"]
 ], resize_keyboard=True)
 
 # ---------------- HANDLERS ----------------
@@ -87,16 +101,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await add_user(update.effective_user)
     await update.message.reply_text("👋 خوش آمدی!", reply_markup=menu)
 
-# ---- CONVERT ----
+
 async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         _, amount, f, t = update.message.text.split()
         result = await get_fiat_rate(f.upper(), t.upper())
-        await update.message.reply_text(f"💱 نتیجه: {result * float(amount)} {t}")
+        await update.message.reply_text(f"💱 نتیجه: {float(amount) * result} {t}")
     except:
-        await update.message.reply_text("فرمت: convert 10 USD EUR")
+        await update.message.reply_text("مثال: convert 10 USD EUR")
 
-# ---- CRYPTO ----
+
 async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         _, symbol = update.message.text.split()
@@ -105,7 +119,7 @@ async def crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("مثال: crypto bitcoin")
 
-# ---- COUNTRY ----
+
 async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         _, name = update.message.text.split(maxsplit=1)
@@ -114,7 +128,7 @@ async def country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("مثال: country germany")
 
-# ---- PROFILE ----
+
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await update.message.reply_text(
@@ -122,7 +136,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 یوزرنیم: @{user.username}"
     )
 
-# ---- ADMIN ----
+
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return await update.message.reply_text("⛔ دسترسی نداری")
@@ -139,11 +153,12 @@ async def main():
     app.add_handler(MessageHandler(filters.Regex("^convert"), convert))
     app.add_handler(MessageHandler(filters.Regex("^crypto"), crypto))
     app.add_handler(MessageHandler(filters.Regex("^country"), country))
-    app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("profile", profile))
+    app.add_handler(CommandHandler("admin", admin))
 
-    print("Bot running...")
+    print("Bot is running...")
     await app.run_polling()
+
 
 if __name__ == "__main__":
     import asyncio
