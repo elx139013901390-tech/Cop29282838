@@ -2,16 +2,13 @@ import os
 import asyncio
 import aiohttp
 import aiosqlite
-import matplotlib.pyplot as plt
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters
+    ContextTypes
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -42,7 +39,6 @@ async def init_db():
             target REAL
         )
         """)
-
         await db.commit()
 
 # ================= API =================
@@ -53,32 +49,15 @@ async def get_price(symbol):
             data = await r.json()
             return data.get(symbol, {}).get("usd")
 
-# ================= USER =================
-async def add_user(user):
+# ================= DB HELPERS =================
+async def add_user(user_id):
     async with aiosqlite.connect(DB) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users(user_id) VALUES (?)",
-            (user.id,)
+            (user_id,)
         )
         await db.commit()
 
-# ================= MENU =================
-def menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🪙 قیمت", callback_data="price")],
-        [InlineKeyboardButton("⭐ علاقه‌مندی‌ها", callback_data="fav")],
-        [InlineKeyboardButton("🔔 هشدار", callback_data="alert")],
-        [InlineKeyboardButton("👑 پنل ادمین", callback_data="admin")],
-        [InlineKeyboardButton("💰 سکه من", callback_data="coins")],
-        [InlineKeyboardButton("📈 نمودار", callback_data="chart")]
-    ])
-
-# ================= START =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await add_user(update.effective_user)
-    await update.message.reply_text("💎 ربات VIP فعال شد", reply_markup=menu())
-
-# ================= FAVORITE =================
 async def add_favorite(user_id, symbol):
     async with aiosqlite.connect(DB) as db:
         await db.execute(
@@ -87,7 +66,6 @@ async def add_favorite(user_id, symbol):
         )
         await db.commit()
 
-# ================= ALERT =================
 async def add_alert(user_id, symbol, target):
     async with aiosqlite.connect(DB) as db:
         await db.execute(
@@ -96,7 +74,6 @@ async def add_alert(user_id, symbol, target):
         )
         await db.commit()
 
-# ================= COINS =================
 async def get_coins(user_id):
     async with aiosqlite.connect(DB) as db:
         async with db.execute(
@@ -106,6 +83,26 @@ async def get_coins(user_id):
             row = await cur.fetchone()
             return row[0] if row else 0
 
+# ================= UI =================
+def menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪙 قیمت بیت‌کوین", callback_data="price")],
+        [InlineKeyboardButton("⭐ علاقه‌مندی", callback_data="fav")],
+        [InlineKeyboardButton("🔔 هشدار", callback_data="alert")],
+        [InlineKeyboardButton("💰 سکه", callback_data="coins")],
+        [InlineKeyboardButton("👑 ادمین", callback_data="admin")]
+    ])
+
+# ================= START =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    await add_user(user_id)
+
+    await update.message.reply_text(
+        "💎 ربات VIP فعال شد",
+        reply_markup=menu()
+    )
+
 # ================= CALLBACK =================
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -113,54 +110,43 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = q.from_user.id
 
-    # ---------- PRICE ----------
+    # ---- PRICE ----
     if q.data == "price":
         price = await get_price("bitcoin")
-        await q.edit_message_text(f"🪙 Bitcoin: ${price}", reply_markup=menu())
+        await q.edit_message_text(f"🪙 بیت‌کوین: ${price}", reply_markup=menu())
 
-    # ---------- FAVORITE ----------
+    # ---- FAVORITE ----
     elif q.data == "fav":
         await add_favorite(user_id, "bitcoin")
-        await q.edit_message_text("⭐ به علاقه‌مندی اضافه شد")
+        await q.edit_message_text("⭐ به علاقه‌مندی اضافه شد", reply_markup=menu())
 
-    # ---------- ALERT ----------
+    # ---- ALERT ----
     elif q.data == "alert":
         await add_alert(user_id, "bitcoin", 50000)
-        await q.edit_message_text("🔔 هشدار روی 50000 ثبت شد")
+        await q.edit_message_text("🔔 هشدار روی 50000 ثبت شد", reply_markup=menu())
 
-    # ---------- COINS ----------
+    # ---- COINS ----
     elif q.data == "coins":
         coins = await get_coins(user_id)
-        await q.edit_message_text(f"💰 سکه شما: {coins}")
+        await q.edit_message_text(f"💰 سکه شما: {coins}", reply_markup=menu())
 
-    # ---------- ADMIN ----------
+    # ---- ADMIN ----
     elif q.data == "admin":
         if user_id != ADMIN_ID:
             return await q.edit_message_text("⛔ دسترسی نداری")
 
-        await q.edit_message_text("👑 پنل ادمین:\n/users /stats")
-
-    # ---------- CHART ----------
-    elif q.data == "chart":
-        prices = [40000, 42000, 41000, 45000, 47000]
-
-        plt.plot(prices)
-        plt.title("Bitcoin Trend")
-        plt.savefig("chart.png")
-
-        with open("chart.png", "rb") as f:
-            await q.message.reply_photo(f)
+        await q.edit_message_text("👑 پنل ادمین فعال شد", reply_markup=menu())
 
 # ================= PRICE CHECKER =================
 async def price_worker(app):
     while True:
-        await asyncio.sleep(20)
+        await asyncio.sleep(30)
 
         async with aiosqlite.connect(DB) as db:
             async with db.execute("SELECT * FROM alerts") as cur:
-                alerts = await cur.fetchall()
+                rows = await cur.fetchall()
 
-        for user_id, symbol, target in alerts:
+        for user_id, symbol, target in rows:
             price = await get_price(symbol)
 
             if price and price >= target:
@@ -180,7 +166,7 @@ async def main():
 
     asyncio.create_task(price_worker(app))
 
-    print("VIP Bot Running...")
+    print("BOT RUNNING...")
     await app.run_polling()
 
 if __name__ == "__main__":
