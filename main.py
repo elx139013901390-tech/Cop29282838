@@ -8,7 +8,9 @@ from sqlalchemy.orm import sessionmaker
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- تنظیمات اصلی ---
-TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+import os
+
+TOKEN = os.getenv("TOKEN")
 # در Railway، این لینک را از بخش Database دریافت و اینجا قرار دهید
 try:
     DATABASE_URL = os.getenv("DATABASE_URL")
