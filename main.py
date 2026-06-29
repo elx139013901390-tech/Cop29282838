@@ -1,5 +1,4 @@
 import os
-import asyncio
 import aiohttp
 import aiosqlite
 
@@ -39,6 +38,7 @@ async def init_db():
             target REAL
         )
         """)
+
         await db.commit()
 
 # ================= API =================
@@ -83,7 +83,7 @@ async def get_coins(user_id):
             row = await cur.fetchone()
             return row[0] if row else 0
 
-# ================= UI =================
+# ================= MENU =================
 def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🪙 قیمت بیت‌کوین", callback_data="price")],
@@ -99,7 +99,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await add_user(user_id)
 
     await update.message.reply_text(
-        "💎 ربات VIP فعال شد",
+        "💎 ربات فعال شد",
         reply_markup=menu()
     )
 
@@ -113,12 +113,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---- PRICE ----
     if q.data == "price":
         price = await get_price("bitcoin")
-        await q.edit_message_text(f"🪙 بیت‌کوین: ${price}", reply_markup=menu())
+        await q.edit_message_text(f"🪙 Bitcoin: ${price}", reply_markup=menu())
 
     # ---- FAVORITE ----
     elif q.data == "fav":
         await add_favorite(user_id, "bitcoin")
-        await q.edit_message_text("⭐ به علاقه‌مندی اضافه شد", reply_markup=menu())
+        await q.edit_message_text("⭐ اضافه شد به علاقه‌مندی", reply_markup=menu())
 
     # ---- ALERT ----
     elif q.data == "alert":
@@ -135,39 +135,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id != ADMIN_ID:
             return await q.edit_message_text("⛔ دسترسی نداری")
 
-        await q.edit_message_text("👑 پنل ادمین فعال شد", reply_markup=menu())
+        await q.edit_message_text("👑 پنل ادمین فعال", reply_markup=menu())
 
-# ================= PRICE CHECKER =================
-async def price_worker(app):
-    while True:
-        await asyncio.sleep(30)
-
-        async with aiosqlite.connect(DB) as db:
-            async with db.execute("SELECT * FROM alerts") as cur:
-                rows = await cur.fetchall()
-
-        for user_id, symbol, target in rows:
-            price = await get_price(symbol)
-
-            if price and price >= target:
-                await app.bot.send_message(
-                    user_id,
-                    f"🚨 هشدار فعال شد!\n{symbol}: ${price}"
-                )
-
-# ================= MAIN =================
-async def main():
-    await init_db()
-
+# ================= MAIN (IMPORTANT FIX) =================
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
 
-    asyncio.create_task(price_worker(app))
-
     print("BOT RUNNING...")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
