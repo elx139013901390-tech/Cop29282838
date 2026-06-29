@@ -144,19 +144,53 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👑 پنل ادمین فعال است")
 
 # ---------------- MAIN ----------------
-async def main():
+import os
+import aiohttp
+import aiosqlite
+
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+DB = "bot.db"
+
+# ---------- DB ----------
+async def init_db():
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT)")
+        await db.commit()
+
+async def add_user(user):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO users(user_id, username) VALUES (?,?)",
+            (user.id, user.username)
+        )
+        await db.commit()
+
+# ---------- START ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await add_user(update.effective_user)
+    await update.message.reply_text("👋 ربات فعال شد")
+
+# ---------- MAIN ----------
+async def post_init(app):
     await init_db()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+async def main():
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex("^convert"), convert))
-    app.add_handler(MessageHandler(filters.Regex("^crypto"), crypto))
-    app.add_handler(MessageHandler(filters.Regex("^country"), country))
-    app.add_handler(CommandHandler("profile", profile))
-    app.add_handler(CommandHandler("admin", admin))
 
-    print("Bot is running...")
+    print("Bot running...")
     await app.run_polling()
 
 
