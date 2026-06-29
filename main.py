@@ -4,12 +4,17 @@ import aiohttp
 import aiosqlite
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 DB = "bot.db"
 
-# ================= DATABASE =================
+# ================= DB =================
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("""
@@ -33,21 +38,24 @@ async def init_db():
         """)
         await db.commit()
 
-async def add_user(user_id):
+async def add_user(user_id: int):
     async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+            (user_id,)
+        )
         await db.commit()
 
-# ================= API BINANCE =================
+# ================= BINANCE API =================
 async def get_price(symbol="BTCUSDT"):
     url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            data = await resp.json()
+        async with session.get(url) as r:
+            data = await r.json()
             return float(data["price"])
 
 # ================= UI =================
-def main_kb():
+def kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 قیمت BTC", callback_data="price")],
         [InlineKeyboardButton("⭐ علاقه‌مندی", callback_data="fav")],
@@ -55,52 +63,53 @@ def main_kb():
         [InlineKeyboardButton("💎 سکه", callback_data="coins")]
     ])
 
-# ================= HANDLERS =================
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await add_user(user_id)
 
     await update.message.reply_text(
         "💎 ربات GOD کریپتو فعال شد",
-        reply_markup=main_kb()
+        reply_markup=kb()
     )
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= CALLBACK =================
+async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     user_id = q.from_user.id
 
-    # -------- PRICE --------
     if q.data == "price":
         price = await get_price("BTCUSDT")
-        await q.edit_message_text(f"💰 BTC Price:\n{price}$")
+        await q.edit_message_text(f"💰 BTC:\n{price}$")
 
-    # -------- COINS --------
     elif q.data == "coins":
         async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT coins FROM users WHERE user_id=?", (user_id,))
+            cur = await db.execute(
+                "SELECT coins FROM users WHERE user_id=?",
+                (user_id,)
+            )
             row = await cur.fetchone()
             coins = row[0] if row else 0
 
-        await q.edit_message_text(f"💎 سکه شما: {coins}")
+        await q.edit_message_text(f"💎 سکه: {coins}")
 
-    # -------- FAVORITES --------
     elif q.data == "fav":
         async with aiosqlite.connect(DB) as db:
-            cur = await db.execute("SELECT symbol FROM favorites WHERE user_id=?", (user_id,))
+            cur = await db.execute(
+                "SELECT symbol FROM favorites WHERE user_id=?",
+                (user_id,)
+            )
             rows = await cur.fetchall()
 
-        favs = "\n".join([r[0] for r in rows]) if rows else "خالی"
-        await q.edit_message_text(f"⭐ علاقه‌مندی‌ها:\n{favs}")
+        text = "\n".join([r[0] for r in rows]) if rows else "خالی"
+        await q.edit_message_text(f"⭐ علاقه‌مندی‌ها:\n{text}")
 
-    # -------- ALERT INFO --------
     elif q.data == "alert":
-        await q.edit_message_text(
-            "🔔 برای ساخت هشدار:\n\n/alert BTCUSDT 40000"
-        )
+        await q.edit_message_text("🔔 استفاده:\n/alert BTCUSDT 40000")
 
-# ================= ALERT SYSTEM =================
-async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ALERT COMMAND =================
+async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     try:
@@ -119,8 +128,8 @@ async def alert_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("✅ هشدار ثبت شد")
 
-# ================= BACKGROUND CHECK =================
-async def check_alerts(app):
+# ================= BACKGROUND TASK =================
+async def checker(app):
     while True:
         async with aiosqlite.connect(DB) as db:
             cur = await db.execute("SELECT user_id, symbol, price FROM alerts")
@@ -132,7 +141,7 @@ async def check_alerts(app):
                 if price >= target:
                     await app.bot.send_message(
                         user_id,
-                        f"🚨 هشدار فعال شد!\n{symbol} = {price}$"
+                        f"🚨 ALERT!\n{symbol} = {price}$"
                     )
             except:
                 pass
@@ -146,12 +155,12 @@ async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("alert", alert_command))
-    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(CommandHandler("alert", alert))
+    app.add_handler(CallbackQueryHandler(callback))
 
-    asyncio.create_task(check_alerts(app))
+    asyncio.create_task(checker(app))
 
-    print("GOD BOT RUNNING...")
+    print("BOT RUNNING...")
     await app.run_polling()
 
 if __name__ == "__main__":
