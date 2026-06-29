@@ -12,9 +12,10 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
 DB = "bot.db"
 
-# ================= DB =================
+# ================= DATABASE =================
 async def init_db():
     async with aiosqlite.connect(DB) as db:
         await db.execute("""
@@ -23,54 +24,13 @@ async def init_db():
             coins INTEGER DEFAULT 100
         )
         """)
-
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS favorites (
-            user_id INTEGER,
-            symbol TEXT
-        )
-        """)
-
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS alerts (
-            user_id INTEGER,
-            symbol TEXT,
-            target REAL
-        )
-        """)
-
         await db.commit()
 
-# ================= API =================
-async def get_price(symbol):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd"
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url) as r:
-            data = await r.json()
-            return data.get(symbol, {}).get("usd")
-
-# ================= DB HELPERS =================
 async def add_user(user_id):
     async with aiosqlite.connect(DB) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users(user_id) VALUES (?)",
             (user_id,)
-        )
-        await db.commit()
-
-async def add_favorite(user_id, symbol):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT INTO favorites VALUES (?,?)",
-            (user_id, symbol)
-        )
-        await db.commit()
-
-async def add_alert(user_id, symbol, target):
-    async with aiosqlite.connect(DB) as db:
-        await db.execute(
-            "INSERT INTO alerts VALUES (?,?,?)",
-            (user_id, symbol, target)
         )
         await db.commit()
 
@@ -83,13 +43,20 @@ async def get_coins(user_id):
             row = await cur.fetchone()
             return row[0] if row else 0
 
-# ================= MENU =================
+# ================= API =================
+async def get_price():
+    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(url) as r:
+            data = await r.json()
+            return data["bitcoin"]["usd"]
+
+# ================= UI =================
 def menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🪙 قیمت بیت‌کوین", callback_data="price")],
+        [InlineKeyboardButton("💰 سکه من", callback_data="coins")],
         [InlineKeyboardButton("⭐ علاقه‌مندی", callback_data="fav")],
-        [InlineKeyboardButton("🔔 هشدار", callback_data="alert")],
-        [InlineKeyboardButton("💰 سکه", callback_data="coins")],
         [InlineKeyboardButton("👑 ادمین", callback_data="admin")]
     ])
 
@@ -99,7 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await add_user(user_id)
 
     await update.message.reply_text(
-        "💎 ربات فعال شد",
+        "👋 خوش آمدی به ربات حرفه‌ای",
         reply_markup=menu()
     )
 
@@ -110,34 +77,24 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = q.from_user.id
 
-    # ---- PRICE ----
     if q.data == "price":
-        price = await get_price("bitcoin")
+        price = await get_price()
         await q.edit_message_text(f"🪙 Bitcoin: ${price}", reply_markup=menu())
 
-    # ---- FAVORITE ----
-    elif q.data == "fav":
-        await add_favorite(user_id, "bitcoin")
-        await q.edit_message_text("⭐ اضافه شد به علاقه‌مندی", reply_markup=menu())
-
-    # ---- ALERT ----
-    elif q.data == "alert":
-        await add_alert(user_id, "bitcoin", 50000)
-        await q.edit_message_text("🔔 هشدار روی 50000 ثبت شد", reply_markup=menu())
-
-    # ---- COINS ----
     elif q.data == "coins":
         coins = await get_coins(user_id)
         await q.edit_message_text(f"💰 سکه شما: {coins}", reply_markup=menu())
 
-    # ---- ADMIN ----
+    elif q.data == "fav":
+        await q.edit_message_text("⭐ اضافه شد به علاقه‌مندی (نسخه ساده)", reply_markup=menu())
+
     elif q.data == "admin":
         if user_id != ADMIN_ID:
-            return await q.edit_message_text("⛔ دسترسی نداری")
+            await q.edit_message_text("⛔ دسترسی نداری")
+        else:
+            await q.edit_message_text("👑 پنل ادمین فعال است", reply_markup=menu())
 
-        await q.edit_message_text("👑 پنل ادمین فعال", reply_markup=menu())
-
-# ================= MAIN (IMPORTANT FIX) =================
+# ================= MAIN (FIXED FOR RAILWAY) =================
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
