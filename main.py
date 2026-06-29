@@ -10,7 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # --- تنظیمات اصلی ---
 TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 # در Railway، این لینک را از بخش Database دریافت و اینجا قرار دهید
-DATABASE_URL = "postgresql://user:password@host:port/dbname" 
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- تنظیمات دیتابیس (SQLAlchemy) ---
 Base = declarative_base()
