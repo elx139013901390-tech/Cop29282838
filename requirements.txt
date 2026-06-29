@@ -1,5 +1,2 @@
-python-telegram-bot
-sqlalchemy
-psycopg2-binary
-requests
-apscheduler
+pip install python-telegram-bot==20.7 
+aiosqlite aiohttp
